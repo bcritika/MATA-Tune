@@ -1,0 +1,1 @@
+$ curl -v https://paper-api.alpaca.markets/v2/account
