@@ -51,12 +51,16 @@ for i in range(len(data) - window_size):
             
             if handle_range.max() < left_max and handle_range.min() > cup_min:
                 sell_price = left_max + depth
+                sell_date = data['Date'].iloc[i + window_size - 1]
+               
                 cup_handle_patterns.append({
                     'start_date': data['Date'].iloc[i],
                     'end_date': data['Date'].iloc[i + window_size - 1],
                     'left_max': left_max,
                     'cup_min': cup_min,
-                    'sell_price': sell_price
+                    'sell_price': sell_price,
+                    'sell_date': sell_date,
+                    
                 })
 
 # Plotting
@@ -84,6 +88,11 @@ for i in range(half_window, len(data) - half_window):
 for pattern in cup_handle_patterns:
     plt.axvspan(pattern['start_date'], pattern['end_date'], color='orange', alpha=0.2)
     plt.axhline(y=pattern['sell_price'], color='red', linestyle='--', label=f'Sell Target: {pattern["sell_price"]:.2f}')
+
+    plt.scatter(pattern['sell_date'], pattern['sell_price'], color='black', marker='o', s=100, label='Sell Point')
+    plt.text(pattern['sell_date'], pattern['sell_price'], f'Sell: {pattern["sell_price"]:.2f}', 
+             verticalalignment='bottom', horizontalalignment='right', color='darkred', fontsize=8)
+
 
 # Labels and legend
 plt.title(f"{ticker} Stock Price with Cup and Handle Pattern Detection and Quadratic Fit")
