@@ -4,8 +4,8 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 
 # Download stock data
-ticker = 'TRAK'
-data = yf.download(ticker, start='2023-10-01', end='2024-10-01')
+ticker = 'AAPL'
+data = yf.download(ticker, start='2020-01-01', end='2024-01-01')
 data.reset_index(inplace=True)
 data['Close'] = data['Close'].astype(float)
 
@@ -55,13 +55,13 @@ for i in range(len(data) - window_size):
             if handle_range.max() < left_max and handle_range.min() > cup_min:
                 sell_price = left_max + depth
                 sell_date = data['Date'].iloc[i + window_size - 1]
-                buy_price = cup_min  # Buy at the minimum of the cup
-                buy_date = data['Date'].iloc[i + half_window]
                 
                 # Mark buy and sell points
                 data.at[i + half_window, 'signal'] = 0  # Buy signal
                 data.at[i + window_size - 1, 'signal'] = 1  # Sell signal
                 
+                buy_price = left_max  # Resistance level
+                buy_date = data['Date'].iloc[i + half_window]
                 cup_handle_patterns.append({
                     'start_date': data['Date'].iloc[i],
                     'end_date': data['Date'].iloc[i + window_size - 1],
@@ -73,22 +73,58 @@ for i in range(len(data) - window_size):
                     'buy_date': buy_date,
                 })
 
-# Example function to handle signals
-def handle_signal(price,date, signal_value):
-    """
-    Placeholder for signal handling logic. This could involve calling an API.
-    """
-    if signal_value == 1:
-        print(f"[SELL] Action triggered on {date} for {price}")
-    elif signal_value == 0:
-        print(f"[BUY] Action triggered on {date} for {price}")
-    else:
-        print(f"[HOLD] No action for {date} for {price}")
+# Simulating trading strategy
+initial_balance = 100000
+balance = initial_balance
+stock_holding = 0
+trading_log = []
 
-# Apply signal detection and trigger API calls
 for idx, row in data.iterrows():
-    if row['signal'] in [0, 1]:  # Only take action on buy or sell signals
-        handle_signal(row['Close'],row['Date'], row['signal'])
+    if row['signal'] == 0:  # Buy signal
+        if balance > 0:  # Ensure we have cash to buy
+            stock_holding = balance // row['Close']
+            balance -= stock_holding * row['Close']
+            trading_log.append({
+                'date': row['Date'],
+                'action': 'BUY',
+                'price': row['Close'],
+                'shares': stock_holding,
+                'balance': balance
+            })
+    elif row['signal'] == 1:  # Sell signal
+        if stock_holding > 0:  # Ensure we have stocks to sell
+            balance += stock_holding * row['Close']
+            trading_log.append({
+                'date': row['Date'],
+                'action': 'SELL',
+                'price': row['Close'],
+                'shares': stock_holding,
+                'balance': balance
+            })
+            stock_holding = 0
+
+# Final forced sell if stocks remain
+print(stock_holding)
+if stock_holding > 0:
+    balance += stock_holding * data['Close'].iloc[-1]
+    trading_log.append({
+        'date': data['Date'].iloc[-1],
+        'action': 'FORCED SELL',
+        'price': data['Close'].iloc[-1],
+        'shares': stock_holding,
+        'balance': balance
+    })
+    stock_holding = 0
+
+# Final portfolio value
+final_value = balance
+print(f"Initial Balance: ${initial_balance:.2f}")
+print(f"Final Portfolio Value: ${final_value:.2f}")
+print(f"Profit: ${final_value - initial_balance:.2f}")
+
+# Display trading log
+trading_log_df = pd.DataFrame(trading_log)
+print(trading_log_df)
 
 # Plotting
 plt.figure(figsize=(14, 7))
@@ -96,23 +132,14 @@ plt.figure(figsize=(14, 7))
 # Plot normalized close price
 plt.plot(data['Date'], data['Normalized_Close'], label='Normalized Close Price', color='blue', alpha=0.6)
 
-# Plot quadratic extremes
-max_points = data[data['extreme_type'] == 'max']
-min_points = data[data['extreme_type'] == 'min']
-plt.scatter(max_points['Date'], max_points['quad_extreme'], color='red', marker='^', label='Local Max (Quadratic Fit)', alpha=0.8)
-plt.scatter(min_points['Date'], min_points['quad_extreme'], color='green', marker='v', label='Local Min (Quadratic Fit)', alpha=0.8)
-
-# Highlight Cup and Handle patterns
-for pattern in cup_handle_patterns:
-    plt.axvspan(pattern['start_date'], pattern['end_date'], color='orange', alpha=0.2)
-    plt.axhline(y=pattern['sell_price'], color='red', linestyle='--', label=f'Sell Target: {pattern["sell_price"]:.2f}')
-    plt.scatter(pattern['sell_date'], pattern['sell_price'], color='black', marker='o', s=100, label='Sell Point')
-    plt.scatter(pattern['buy_date'], pattern['buy_price'], color='green', marker='o', s=100, label='Buy Point')
-    plt.text(pattern['buy_date'], pattern['buy_price'], f'Buy: {pattern["buy_price"]:.2f}', 
-             verticalalignment='top', horizontalalignment='left', color='darkgreen', fontsize=8)
+# Plot buy and sell signals
+buy_signals = data[data['signal'] == 0]
+sell_signals = data[data['signal'] == 1]
+plt.scatter(buy_signals['Date'], buy_signals['Normalized_Close'], color='green', label='Buy Signal', marker='^', alpha=1)
+plt.scatter(sell_signals['Date'], sell_signals['Normalized_Close'], color='red', label='Sell Signal', marker='v', alpha=1)
 
 # Labels and legend
-plt.title(f"{ticker} Stock Price with Cup and Handle Pattern Detection and Signals")
+plt.title(f"{ticker} Stock Price with Trading Signals")
 plt.xlabel("Date")
 plt.ylabel("Normalized Close Price")
 plt.legend()
