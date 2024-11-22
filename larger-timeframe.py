@@ -9,11 +9,11 @@ data = yf.download(ticker, start='2020-01-01', end='2024-01-01')
 data.reset_index(inplace=True)
 data['Close'] = data['Close'].astype(float)
 
-# Normalize by dividing Close by a 50-day rolling average
-data['Normalized_Close'] = data['Close'] / data['Close'].rolling(window=50).mean()
+# Normalize by dividing Close by a 200-day rolling average
+data['Normalized_Close'] = data['Close'] / data['Close'].rolling(window=200).mean()
 
 # Parameters for fitting
-window_size = 11
+window_size = 50  # Larger window size for broader patterns
 half_window = window_size // 2
 
 # Initialize columns for quadratic fit results
@@ -104,7 +104,6 @@ for idx, row in data.iterrows():
             stock_holding = 0
 
 # Final forced sell if stocks remain
-print(stock_holding)
 if stock_holding > 0:
     balance += stock_holding * data['Close'].iloc[-1]
     trading_log.append({
@@ -138,8 +137,12 @@ sell_signals = data[data['signal'] == 1]
 plt.scatter(buy_signals['Date'], buy_signals['Normalized_Close'], color='green', label='Buy Signal', marker='^', alpha=1)
 plt.scatter(sell_signals['Date'], sell_signals['Normalized_Close'], color='red', label='Sell Signal', marker='v', alpha=1)
 
+# Annotate detected Cup and Handle patterns
+for pattern in cup_handle_patterns:
+    plt.axvspan(pattern['start_date'], pattern['end_date'], color='yellow', alpha=0.3, label='Cup and Handle' if 'Cup and Handle' not in plt.gca().get_legend_handles_labels()[1] else "")
+
 # Labels and legend
-plt.title(f"{ticker} Stock Price with Trading Signals")
+plt.title(f"{ticker} Stock Price with Cup and Handle Patterns")
 plt.xlabel("Date")
 plt.ylabel("Normalized Close Price")
 plt.legend()
