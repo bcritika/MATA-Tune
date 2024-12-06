@@ -1,1 +1,2 @@
 # MATA-Tune
+MATA-Tune tries to automate various technical financial indicators including a moving average crossover, a cup and handle, and additionally explores linear regression and M2-supply. We are currently in the process of further developing our tools and techniques. Eventually, our plan is to deploy on an EC2 instance.
