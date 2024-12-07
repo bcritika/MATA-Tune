@@ -13,7 +13,7 @@ data['Close'] = data['Close'].astype(float)
 data['Normalized_Close'] = data['Close'] / data['Close'].rolling(window=50).mean()
 
 # Parameters for fitting
-window_size = 11
+window_size = 20
 half_window = window_size // 2
 
 # Initialize columns for quadratic fit results
@@ -45,7 +45,7 @@ for i in range(len(data) - window_size):
         cup_min = data['quad_extreme'].iloc[i + half_window]
         right_max = data['quad_extreme'].iloc[i + window_size - 1]
         
-        if right_max >= 0.95 * left_max:  # Check cup shape
+        if right_max >= 0.90 * left_max:  # Check cup shape
             depth = left_max - cup_min
             handle_range = data['Normalized_Close'][i + half_window + 1:i + window_size - 1]
             
