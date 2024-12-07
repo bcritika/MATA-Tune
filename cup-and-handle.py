@@ -2,10 +2,11 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import matplotlib.pyplot as plt
+from matplotlib.dates import DateFormatter
 
 # Download stock data
-ticker = 'AAPL'
-data = yf.download(ticker, start='2015-01-01', end='2017-01-01')
+ticker = 'MSFT'
+data = yf.download(ticker, start='2019-01-01', end='2021-01-01')
 data.reset_index(inplace=True)
 data['Close'] = data['Close'].astype(float)
 
@@ -13,7 +14,7 @@ data['Close'] = data['Close'].astype(float)
 data['Normalized_Close'] = data['Close'] / data['Close'].rolling(window=50).mean()
 
 # Parameters for fitting
-window_size = 20
+window_size = 50  # Increased for better trend detection
 half_window = window_size // 2
 
 # Initialize columns for quadratic fit results
@@ -50,21 +51,22 @@ for i in range(len(data) - window_size):
             handle_range = data['Normalized_Close'][i + half_window + 1:i + window_size - 1]
             
             if handle_range.max() < left_max and handle_range.min() > cup_min:
-                sell_price = left_max + depth
+                buy_price = cup_min * data['Close'].iloc[i + half_window]  # Buy price is cup minimum (actual price)
+                sell_price = (left_max + depth) * data['Close'].iloc[i]  # Sell price is left max + depth
                 sell_date = data['Date'].iloc[i + window_size - 1]
-               
+                
                 cup_handle_patterns.append({
                     'start_date': data['Date'].iloc[i],
                     'end_date': data['Date'].iloc[i + window_size - 1],
                     'left_max': left_max,
                     'cup_min': cup_min,
+                    'buy_price': buy_price,
                     'sell_price': sell_price,
                     'sell_date': sell_date,
-                    
                 })
 
 # Plotting
-plt.figure(figsize=(14, 7))
+plt.figure(figsize=(16, 8))
 
 # Plot normalized close price
 plt.plot(data['Date'], data['Normalized_Close'], label='Normalized Close Price', color='blue', alpha=0.6)
@@ -87,15 +89,19 @@ for i in range(half_window, len(data) - half_window):
 # Highlight Cup and Handle patterns
 for pattern in cup_handle_patterns:
     plt.axvspan(pattern['start_date'], pattern['end_date'], color='orange', alpha=0.2)
-    plt.axhline(y=pattern['sell_price'], color='red', linestyle='--', label=f'Sell Target: {pattern["sell_price"]:.2f}')
+    plt.axhline(y=pattern['sell_price'], color='red', linestyle='--', label=f'Sell Price: {pattern["sell_price"]:.2f}')
+    plt.axhline(y=pattern['buy_price'], color='green', linestyle='--', label=f'Buy Price: {pattern["buy_price"]:.2f}')
 
     plt.scatter(pattern['sell_date'], pattern['sell_price'], color='black', marker='o', s=100, label='Sell Point')
     plt.text(pattern['sell_date'], pattern['sell_price'], f'Sell: {pattern["sell_price"]:.2f}', 
              verticalalignment='bottom', horizontalalignment='right', color='darkred', fontsize=8)
 
+# Date formatting for better readability
+plt.gca().xaxis.set_major_formatter(DateFormatter('%Y-%m'))
+plt.gcf().autofmt_xdate()
 
 # Labels and legend
-plt.title(f"{ticker} Stock Price with Cup and Handle Pattern Detection and Quadratic Fit")
+plt.title(f"{ticker} Stock Price with Cup and Handle Pattern Detection, Buy and Sell Prices")
 plt.xlabel("Date")
 plt.ylabel("Normalized Close Price")
 plt.legend()
