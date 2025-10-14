@@ -259,6 +259,13 @@ class FundamentalIndicatorsNode:
         companies_state = state.get("companies", [])
         fundamentals = {}
 
+        tickers = []
+
+        for sector in companies_state:
+            rec_stocks = companies_state[sector]["recommended_stocks"]
+            temp = [s.split("(")[-1].strip(")") for s in rec_stocks]
+            tickers.extend(temp) 
+
         # ✅ Handle both: flat list of tickers OR dict of industries
         if isinstance(companies_state, dict):
             # Flatten to list of tickers from nested dict
