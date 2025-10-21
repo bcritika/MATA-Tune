@@ -1,39 +1,72 @@
 import pandas as pd
 import numpy as np
-import langgraph
 import json
-import langchain
-from langgraph.graph import StateGraph, END
-from typing import TypedDict, Optional, Dict, List
 import requests
 import os
-from langchain_openai import ChatOpenAI
-from dotenv import load_dotenv
-import yfinance as yf
-from langgraph.graph import add_messages
-from typing_extensions import Annotated
 import warnings
+import yfinance as yf
+from dotenv import load_dotenv
+from typing import TypedDict, Dict, List
+from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph
 
 warnings.filterwarnings("ignore", message="YF.download() has changed argument auto_adjust")
 
+# ---------- Environment ---------- #
 load_dotenv()
-
 llm = ChatOpenAI(model="gpt-4o-mini", api_key=os.getenv("OPEN_AI_KEY"))
 
-# ---------------- STATE ---------------- #
+# ---------- Helpers ---------- #
+def parse_json_safely(text: str):
+    """Remove code fences and parse JSON if possible."""
+    if not text:
+        return None
+    cleaned = text.strip().replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        return None
+
+def normalize_companies_to_tickers(obj) -> List[str]:
+    """Normalize various possible LLM outputs into a flat list of uppercase tickers."""
+    if isinstance(obj, dict) and "companies" in obj:
+        obj = obj["companies"]
+
+    tickers = []
+    if isinstance(obj, list):
+        for item in obj:
+            if isinstance(item, str):
+                tickers.append(item.upper())
+            elif isinstance(item, dict):
+                t = item.get("ticker") or item.get("symbol") or item.get("name") or ""
+                if t:
+                    tickers.append(str(t).upper())
+    elif isinstance(obj, dict):
+        for _, arr in obj.items():
+            if isinstance(arr, list):
+                for item in arr:
+                    if isinstance(item, str):
+                        tickers.append(item.upper())
+                    elif isinstance(item, dict):
+                        t = item.get("ticker") or item.get("symbol") or item.get("name") or ""
+                        if t:
+                            tickers.append(str(t).upper())
+    return sorted(set(tickers))
+
+# ---------- State ---------- #
 class PortfolioState(TypedDict, total=False):
     user: dict
     indicators: dict
     industries: list
-    assets: list
+    asset_classes: list
     companies: list
     sentiment: dict
     fundamental: dict
     technical: dict
+    portfolio: dict
     recommendation: dict
 
-
-# ---------------- USER ---------------- #
+# ---------- User ---------- #
 class UserProfile:
     def __init__(self, name, risk_profile, return_requirements, preferred_assets, capital):
         self.name = name
@@ -56,238 +89,165 @@ class UserNode:
         self.user = user
 
     def __call__(self, state: PortfolioState) -> PortfolioState:
-        print("\n🟦 [UserNode] Starting...")
+        print("[UserNode] Starting")
         user_dict = self.user.to_dict()
         print("User:", user_dict)
-        print("🟩 [UserNode] Completed.\n")
+        print("[UserNode] Completed\n")
         return {"user": user_dict}
 
-
-# ---------------- ECONOMIC INDICATORS ---------------- #
+# ---------- Economic Indicators ---------- #
 class EconomicIndicators:
     def __init__(self):
         self.api_key = os.getenv("FRED_KEY")
-        self.m2 = None
-        self.unemployment = None
-        self.gdp = None
-        self.consumer_spending = None
-        self.usd_strength = None
 
     def _fetch_from_fred(self, series_id):
-        url = f"https://api.stlouisfed.org/fred/series/observations?series_id={series_id}&api_key={self.api_key}&file_type=json"
-        resp = requests.get(url).json()
-        if resp.get("observations"):
-            return float(resp["observations"][-1]["value"])
+        try:
+            url = f"https://api.stlouisfed.org/fred/series/observations?series_id={series_id}&api_key={self.api_key}&file_type=json"
+            resp = requests.get(url, timeout=10).json()
+            if resp.get("observations"):
+                return float(resp["observations"][-1]["value"])
+        except Exception:
+            return None
         return None
 
     def get_all(self):
+        try:
+            usd = yf.Ticker("DX-Y.NYB").history(period="1mo")["Close"].iloc[-1]
+        except Exception:
+            usd = None
         return {
             "m2": self._fetch_from_fred("M2SL"),
             "unemployment": self._fetch_from_fred("UNRATE"),
             "gdp": self._fetch_from_fred("A191RL1Q225SBEA"),
             "consumer_spending": self._fetch_from_fred("PCE"),
-            "usd_strength": yf.Ticker("DX-Y.NYB").history(period="1mo")["Close"].iloc[-1],
+            "usd_strength": usd,
         }
 
 class EconomicIndicatorsNode:
     def __call__(self, state: PortfolioState) -> PortfolioState:
-        print("\n🟦 [EconomicIndicatorsNode] Starting...")
+        print("[EconomicIndicatorsNode] Starting")
         econ = EconomicIndicators()
         indicators = econ.get_all()
         state["indicators"] = indicators
         print("Indicators:", indicators)
-        print("🟩 [EconomicIndicatorsNode] Completed.\n")
+        print("[EconomicIndicatorsNode] Completed\n")
         return state
 
-
-# ---------------- INDUSTRIES ---------------- #
+# ---------- Industries ---------- #
 class IndustriesNode:
     def __call__(self, state: PortfolioState) -> PortfolioState:
-        print("\n🟦 [IndustriesNode] Starting...")
+        print("[IndustriesNode] Starting")
         indicators = state.get("indicators", {})
         prompt = f"You are an investment strategist. Indicators: {indicators}. Return valid JSON with 'industries' and 'reasoning'."
         response = llm.invoke(prompt)
-        response_text = response.content.strip().replace("```json", "").replace("```", "")
-        try:
-            industries_data = json.loads(response_text)
-            state["industries"] = industries_data.get("industries", [])
-            state["industries_reasoning"] = industries_data.get("reasoning", {})
-        except Exception as e:
-            print("⚠️ JSON parse failed in IndustriesNode:", e)
-            print("Raw output:", response_text)
-            state["industries"] = [response_text]
+        data = parse_json_safely(response.content)
+        if not isinstance(data, dict):
+            state["industries"] = []
+        else:
+            state["industries"] = data.get("industries", [])
         print("Industries:", state.get("industries"))
-        print("🟩 [IndustriesNode] Completed.\n")
+        print("[IndustriesNode] Completed\n")
         return state
 
-
-# ---------------- ASSET CLASSES ---------------- #
+# ---------- Asset Classes ---------- #
 class AssetClassesNode:
     def __call__(self, state: PortfolioState) -> PortfolioState:
-        print("\n🟦 [AssetClassesNode] Starting...")
+        print("[AssetClassesNode] Starting")
         industries = state.get("industries", [])
         indicators = state.get("indicators", {})
         user = state.get("user", {})
-        prompt = f"Industries: {industries}, Indicators: {indicators}, User: {user}. Return valid JSON with 'asset_classes'."
+        prompt = f"Industries: {industries}, Indicators: {indicators}, User: {user}. Return JSON with 'asset_classes'."
         response = llm.invoke(prompt)
-        response_text = response.content.strip().replace("```json", "").replace("```", "")
-        try:
-            data = json.loads(response_text)
+        data = parse_json_safely(response.content)
+        if not isinstance(data, dict):
+            state["asset_classes"] = []
+        else:
             state["asset_classes"] = data.get("asset_classes", [])
-            state["asset_classes_reasoning"] = data.get("reasoning", {})
-        except Exception as e:
-            print("⚠️ JSON parse failed in AssetClassesNode:", e)
-            print("Raw output:", response_text)
-            state["asset_classes"] = [response_text]
         print("Asset classes:", state.get("asset_classes"))
-        print("🟩 [AssetClassesNode] Completed.\n")
+        print("[AssetClassesNode] Completed\n")
         return state
 
-
-# ---------------- COMPANIES ---------------- #
+# ---------- Companies ---------- #
 class CompaniesNode:
     def __call__(self, state: PortfolioState) -> PortfolioState:
-        print("\n🟦 [CompaniesNode] Starting...")
+        print("[CompaniesNode] Starting")
         industries = state.get("industries", [])
         asset_classes = state.get("asset_classes", [])
         indicators = state.get("indicators", {})
         user = state.get("user", {})
-        prompt = f"Industries: {industries}, Asset classes: {asset_classes}, Indicators: {indicators}, User: {user}. Return JSON with companies."
+        prompt = f"Industries: {industries}, Asset classes: {asset_classes}, Indicators: {indicators}, User: {user}. Return JSON with a 'companies' key containing stock tickers."
         response = llm.invoke(prompt)
-        response_text = response.content.strip().replace("```json", "").replace("```", "")
-        try:
-            data = json.loads(response_text)
-            state["companies"] = data.get("companies", [])
-            state["companies_reasoning"] = data.get("reasoning", {})
-        except Exception as e:
-            print("⚠️ JSON parse failed in CompaniesNode:", e)
-            print("Raw output:", response_text)
-            state["companies"] = [response_text]
-        print("Companies:", state.get("companies"))
-        print("🟩 [CompaniesNode] Completed.\n")
+        data = parse_json_safely(response.content)
+        tickers = normalize_companies_to_tickers(data)
+        state["companies"] = tickers
+        print("Companies (tickers):", tickers)
+        print("[CompaniesNode] Completed\n")
         return state
 
-
-# ---------------- SENTIMENT ---------------- #
+# ---------- Sentiment ---------- #
 class SentimentNode:
     def __call__(self, state: PortfolioState) -> PortfolioState:
-        print("\n🟦 [SentimentNode] Starting...")
-        companies = state.get("companies", [])
-        if not companies:
-            print("⚠️ No companies found — skipping sentiment analysis.")
+        print("[SentimentNode] Starting")
+        tickers = state.get("companies", []) or []
+        if not tickers:
+            print("No companies found, skipping sentiment.")
             state["sentiment"] = {}
             return state
-        prompt = f"Evaluate sentiment for companies {companies}. Return JSON with 'sentiment' and 'reasoning'."
+        prompt = f"Evaluate market sentiment for these tickers: {tickers}. Return JSON with 'sentiment'."
         response = llm.invoke(prompt)
-        try:
-            data = json.loads(response.content)
-            state["sentiment"] = data.get("sentiment", {})
-        except Exception as e:
-            print("⚠️ JSON parse failed in SentimentNode:", e)
-            state["sentiment"] = {c: "unknown" for c in companies}
-        print("Sentiment:", state.get("sentiment"))
-        print("🟩 [SentimentNode] Completed.\n")
+        data = parse_json_safely(response.content)
+        if not isinstance(data, dict) or "sentiment" not in data:
+            state["sentiment"] = {t: "unknown" for t in tickers}
+        else:
+            s = data["sentiment"]
+            state["sentiment"] = {k.upper(): v for k, v in s.items()}
+        print("Sentiment:", state["sentiment"])
+        print("[SentimentNode] Completed\n")
         return state
 
-
-# ---------------- TECHNICAL ---------------- #
+# ---------- Technical Indicators ---------- #
 class TechnicalIndicatorsNode:
     def __call__(self, state: PortfolioState) -> PortfolioState:
-        print("\n🟦 [TechnicalIndicatorsNode] Starting...")
-
-        companies_state = state.get("companies", [])
+        print("[TechnicalIndicatorsNode] Starting")
+        tickers = state.get("companies", []) or []
         technicals = {}
-
-        # ✅ Handle both shapes: nested dict or flat list
-        if isinstance(companies_state, dict):
-            tickers = [
-                c["ticker"].upper()
-                for sector in companies_state.values()
-                for c in sector
-                if "ticker" in c
-            ]
-        elif isinstance(companies_state, list):
-            tickers = [c.upper() for c in companies_state]
-        else:
-            tickers = []
-
-        print(f"✅ Extracted {len(tickers)} tickers for technicals: {tickers}")
-
         for t in tickers:
             try:
-                # Download last 6 months of daily close data
                 data = yf.download(t, period="6mo", interval="1d", progress=False)
                 if data.empty:
-                    raise ValueError("No price data available")
-
+                    raise ValueError("No price data")
                 close = data["Close"]
-
-                # --- RSI (14-day) ---
                 delta = close.diff()
                 gain = delta.clip(lower=0).rolling(14).mean()
                 loss = -delta.clip(upper=0).rolling(14).mean()
                 rs = gain / loss
                 rsi = 100 - (100 / (1 + rs))
-
-                # --- MACD (12-26) ---
                 ema12 = close.ewm(span=12, adjust=False).mean()
                 ema26 = close.ewm(span=26, adjust=False).mean()
                 macd = ema12 - ema26
                 signal = macd.ewm(span=9, adjust=False).mean()
-
                 technicals[t] = {
-                    "RSI": round(rsi.iloc[-1], 2),
-                    "MACD": round(macd.iloc[-1], 2),
-                    "Signal": round(signal.iloc[-1], 2),
+                    "RSI": round(float(rsi.iloc[-1]), 2),
+                    "MACD": round(float(macd.iloc[-1]), 2),
+                    "Signal": round(float(signal.iloc[-1]), 2),
                     "Trend": "bullish" if macd.iloc[-1] > signal.iloc[-1] else "bearish"
                 }
-
             except Exception as e:
                 technicals[t] = {"error": str(e)}
-
         state["technical"] = technicals
-        print(f"📈 Collected technicals for {len(technicals)} tickers.")
-        print("🟩 [TechnicalIndicatorsNode] Completed.\n")
+        print("Collected technicals for", len(technicals), "tickers.")
+        print("[TechnicalIndicatorsNode] Completed\n")
         return state
 
-
-# ---------------- FUNDAMENTALS ---------------- #
+# ---------- Fundamentals ---------- #
 class FundamentalIndicatorsNode:
     def __call__(self, state: PortfolioState) -> PortfolioState:
-        print("\n🟦 [FundamentalIndicatorsNode] Starting...")
-
-        companies_state = state.get("companies", [])
+        print("[FundamentalIndicatorsNode] Starting")
+        tickers = state.get("companies", []) or []
         fundamentals = {}
-
-        tickers = []
-
-        for sector in companies_state:
-            rec_stocks = companies_state[sector]["recommended_stocks"]
-            temp = [s.split("(")[-1].strip(")") for s in rec_stocks]
-            tickers.extend(temp) 
-
-        # ✅ Handle both: flat list of tickers OR dict of industries
-        if isinstance(companies_state, dict):
-            # Flatten to list of tickers from nested dict
-            tickers = [
-                c["ticker"].upper()
-                for industry in companies_state.values()
-                for c in industry
-                if "ticker" in c
-            ]
-        elif isinstance(companies_state, list):
-            # Already flat list
-            tickers = [c.upper() for c in companies_state]
-        else:
-            tickers = []
-
-        print(f"✅ Extracted {len(tickers)} tickers for fundamentals: {tickers}")
-
         for t in tickers:
             try:
-                ticker = yf.Ticker(t)
-                info = ticker.info
-
+                info = yf.Ticker(t).info
                 fundamentals[t] = {
                     "PE": info.get("forwardPE") or info.get("trailingPE"),
                     "ROE": info.get("returnOnEquity"),
@@ -297,25 +257,20 @@ class FundamentalIndicatorsNode:
                     "MarketCap": info.get("marketCap"),
                     "DividendYield": info.get("dividendYield"),
                 }
-
             except Exception as e:
                 fundamentals[t] = {"error": str(e)}
-
         state["fundamental"] = fundamentals
-        print(f"📊 Collected fundamentals for {len(fundamentals)} companies.")
-        print("🟩 [FundamentalIndicatorsNode] Completed.\n")
+        print("Collected fundamentals for", len(fundamentals), "companies.")
+        print("[FundamentalIndicatorsNode] Completed\n")
         return state
 
-
-
-# ---------------- PORTFOLIO OPTIMIZATION ---------------- #
+# ---------- Portfolio Optimization ---------- #
 class PortfolioOptimizationNode:
     def __call__(self, state: PortfolioState) -> PortfolioState:
-        print("\n🟦 [PortfolioOptimizationNode] Starting...")
+        print("[PortfolioOptimizationNode] Starting")
         sentiment = state.get("sentiment", {})
         technical = state.get("technical", {})
         fundamental = state.get("fundamental", {})
-        user = state.get("user", {})
         scores = {}
         for c in sentiment.keys():
             score = 0
@@ -323,46 +278,42 @@ class PortfolioOptimizationNode:
             elif sentiment.get(c) == "neutral": score += 1
             else: score += 1
             if technical.get(c, {}).get("Trend") == "bullish": score += 1
-            if fundamental.get(c, {}).get("PE") and fundamental[c]["PE"] < 20: score += 1
+            pe = fundamental.get(c, {}).get("PE")
+            if pe and pe < 20: score += 1
             scores[c] = score
         total = sum(np.exp(v) for v in scores.values()) if scores else 1
         weights = {c: round(np.exp(v) / total, 3) for c, v in scores.items()}
         state["portfolio"] = weights
         print("Portfolio weights:", weights)
-        print("🟩 [PortfolioOptimizationNode] Completed.\n")
+        print("[PortfolioOptimizationNode] Completed\n")
         return state
 
-
-# ---------------- RECOMMENDATION ---------------- #
+# ---------- Recommendation ---------- #
 class RecommendationNode:
     def __call__(self, state: PortfolioState) -> PortfolioState:
-        print("\n🟦 [RecommendationNode] Starting...")
+        print("[RecommendationNode] Starting")
         portfolio = state.get("portfolio", {})
         if not portfolio:
-            print("⚠️ No portfolio generated.")
-            state["recommendation"] = {
-                "portfolio": {},
-                "note": "No portfolio could be generated."
-            }
+            state["recommendation"] = {"portfolio": {}, "note": "No portfolio generated."}
             return state
         user = state.get("user", {})
         industries = state.get("industries", [])
         note = f"Portfolio for {user.get('name')} with {len(portfolio)} stocks. Industries: {industries}."
         state["recommendation"] = {"portfolio": portfolio, "note": note}
-        print("Final Recommendation:", state["recommendation"])
-        print("🟩 [RecommendationNode] Completed.\n")
+        print("Final recommendation:", state["recommendation"])
+        print("[RecommendationNode] Completed\n")
         return state
 
-
-# ---------------- GRAPH SETUP ---------------- #
+# ---------- Graph Setup ---------- #
 workflow = StateGraph(PortfolioState)
 workflow.set_entry_point("user")
+
 user = UserProfile(
-    name="Alice",
-    risk_profile="moderate",
-    return_requirements=0.08,
-    preferred_assets=["Tech Stocks", "Dividend Stocks"],
-    capital=100000
+    name="Ritika",
+    risk_profile="high",
+    return_requirements=0.15,
+    preferred_assets=[],
+    capital=3500
 )
 
 workflow.add_node("user", UserNode(user))
@@ -388,12 +339,12 @@ workflow.add_edge("portfolio_opt", "recommendation")
 
 workflow.set_finish_point("recommendation")
 
-# ---------------- RUN ---------------- #
+# ---------- Run ---------- #
 app = workflow.compile()
 initial_state = PortfolioState()
 final_state = app.invoke(initial_state)
 
 print("\n==============================")
-print("🏁 FINAL OUTPUT")
+print("FINAL OUTPUT")
 print("==============================")
-print(final_state["recommendation"])
+print(final_state.get("recommendation"))
