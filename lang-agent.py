@@ -227,10 +227,10 @@ class TechnicalIndicatorsNode:
                 macd = ema12 - ema26
                 signal = macd.ewm(span=9, adjust=False).mean()
                 technicals[t] = {
-                    "RSI": round(float(rsi.iloc[-1]), 2),
-                    "MACD": round(float(macd.iloc[-1]), 2),
-                    "Signal": round(float(signal.iloc[-1]), 2),
-                    "Trend": "bullish" if macd.iloc[-1] > signal.iloc[-1] else "bearish"
+                    "RSI": round(float(rsi.iloc[-1].item()), 2),
+                    "MACD": round(float(macd.iloc[-1].item()), 2),
+                    "Signal": round(float(signal.iloc[-1].item()), 2),
+                    "Trend": "bullish" if macd.iloc[-1].item() > signal.iloc[-1].item() else "bearish",
                 }
             except Exception as e:
                 technicals[t] = {"error": str(e)}
@@ -347,4 +347,12 @@ final_state = app.invoke(initial_state)
 print("\n==============================")
 print("FINAL OUTPUT")
 print("==============================")
-print(final_state.get("recommendation"))
+portfolio_df = pd.DataFrame(
+    list(final_state['portfolio'].items()),
+    columns=['Ticker', 'Weight']
+)
+portfolio_df['Weight (%)'] = (portfolio_df['Weight'] * 100).round(2)
+portfolio_df = portfolio_df[['Ticker', 'Weight (%)']]
+
+# Print as a nicely formatted table
+print(portfolio_df.to_string(index=False))
